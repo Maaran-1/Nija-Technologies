@@ -1,0 +1,137 @@
+
+<div id="erd" style="padding:8px 0"></div>
+<script type="module">
+import mermaid from 'https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs';
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+await document.fonts.ready;
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'base',
+  fontFamily: '"Anthropic Sans", sans-serif',
+  themeVariables: {
+    darkMode: dark,
+    fontSize: '12px',
+    fontFamily: '"Anthropic Sans", sans-serif',
+    lineColor: dark ? '#9c9a92' : '#73726c',
+    textColor: dark ? '#c2c0b6' : '#3d3d3a',
+  },
+});
+const { svg } = await mermaid.render('erd-svg', `erDiagram
+  users ||--o{ tasks : assigned_to
+  users ||--o{ timesheet_entries : logged_by
+  users ||--o{ utilization_snapshots : for_user
+  users ||--o{ recommendations : involves
+  projects ||--o{ tasks : contains
+  projects ||--o{ milestones : has
+  projects ||--o{ project_health_scores : scored_by
+  tasks ||--o{ timesheet_entries : tracked_in
+  tasks ||--o{ recommendations : subject_of
+  milestones ||--o{ tasks : groups
+
+  users {
+    uuid id PK
+    string zoho_user_id UK
+    string name
+    string email
+    string role
+    float capacity_hours_per_week
+    boolean is_active
+    timestamp synced_at
+  }
+  projects {
+    uuid id PK
+    string zoho_project_id UK
+    string name
+    string status
+    date start_date
+    date end_date
+    float budget_hours
+    timestamp synced_at
+  }
+  tasks {
+    uuid id PK
+    string zoho_task_id UK
+    uuid project_id FK
+    uuid assigned_to FK
+    string title
+    string status
+    int priority
+    float estimated_hours
+    date due_date
+    timestamp synced_at
+  }
+  milestones {
+    uuid id PK
+    string zoho_milestone_id UK
+    uuid project_id FK
+    string name
+    date due_date
+    boolean is_completed
+  }
+  timesheet_entries {
+    uuid id PK
+    string zoho_entry_id UK
+    uuid task_id FK
+    uuid user_id FK
+    date work_date
+    float hours_logged
+    string notes
+  }
+  utilization_snapshots {
+    uuid id PK
+    uuid user_id FK
+    date snapshot_date
+    float capacity_hours
+    float allocated_hours
+    float logged_hours
+    float utilization_pct
+    string utilization_band
+  }
+  project_health_scores {
+    uuid id PK
+    uuid project_id FK
+    date scored_at
+    float overall_score
+    float schedule_score
+    float resource_score
+    float risk_level
+    string health_band
+  }
+  recommendations {
+    uuid id PK
+    string type
+    uuid source_user_id FK
+    uuid target_user_id FK
+    uuid task_id FK
+    float projected_source_util
+    float projected_target_util
+    string status
+    string rationale
+    timestamp created_at
+  }
+`);
+document.getElementById('erd').innerHTML = svg;
+
+document.querySelectorAll('#erd svg.erDiagram .node').forEach(node => {
+  const firstPath = node.querySelector('path[d]');
+  if (!firstPath) return;
+  const d = firstPath.getAttribute('d');
+  const nums = d.match(/-?[\d.]+/g)?.map(Number);
+  if (!nums || nums.length < 8) return;
+  const xs = [nums[0], nums[2], nums[4], nums[6]];
+  const ys = [nums[1], nums[3], nums[5], nums[7]];
+  const x = Math.min(...xs), y = Math.min(...ys);
+  const w = Math.max(...xs) - x, h = Math.max(...ys) - y;
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('x', x); rect.setAttribute('y', y);
+  rect.setAttribute('width', w); rect.setAttribute('height', h);
+  rect.setAttribute('rx', '8');
+  for (const a of ['fill', 'stroke', 'stroke-width', 'class', 'style']) {
+    if (firstPath.hasAttribute(a)) rect.setAttribute(a, firstPath.getAttribute(a));
+  }
+  firstPath.replaceWith(rect);
+});
+document.querySelectorAll('#erd svg.erDiagram .row-rect-odd path, #erd svg.erDiagram .row-rect-even path').forEach(p => {
+  p.setAttribute('stroke', 'none');
+});
+</script>
