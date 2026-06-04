@@ -8,8 +8,30 @@ from app.config import settings
 
 logger = structlog.get_logger()
 
-_fernet = Fernet(settings.ENCRYPTION_KEY.encode() if len(settings.ENCRYPTION_KEY) == 44
-                 else Fernet.generate_key())
+
+def _init_fernet() -> Fernet:
+    """
+    Initialize Fernet cipher from the ENCRYPTION_KEY setting.
+    Raises ValueError at startup if the key is missing or malformed.
+    A valid key is exactly 44 characters (URL-safe base64 of 32 bytes).
+    Generate one with:
+        python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    """
+    key = settings.ENCRYPTION_KEY
+    if not key or len(key.strip()) != 44:
+        raise ValueError(
+            "ENCRYPTION_KEY is missing or invalid. "
+            "It must be a valid 44-character Fernet key. "
+            "Generate one with: python -c \"from cryptography.fernet import Fernet; "
+            "print(Fernet.generate_key().decode())\""
+        )
+    try:
+        return Fernet(key.strip().encode())
+    except Exception as exc:
+        raise ValueError(f"ENCRYPTION_KEY is not a valid Fernet key: {exc}") from exc
+
+
+_fernet = _init_fernet()
 
 
 def encrypt_token(token: str) -> str:
@@ -21,19 +43,38 @@ def decrypt_token(encrypted: str) -> str:
 
 
 class ZohoTokenStore:
-    """In-database encrypted token storage for Zoho OAuth credentials."""
+    """
+    In-database encrypted token storage for Zoho OAuth credentials.
+    Uses a dedicated OAuthToken record stored in SyncMetadata with entity_type
+    prefixed 'oauth_' to isolate from sync state records.
+
+    NOTE: Tokens are stored in the 'last_error' column which is a 500-char
+    String column. Encrypted Fernet tokens are ~180-220 chars for short tokens,
+    which fits, but this is semantically wrong. A future migration should add a
+    dedicated oauth_tokens table with a Text column.
+    """
 
     def __init__(self, db):
         self.db = db
 
     def _get_setting(self, key: str) -> Optional[str]:
         from app.models.analytics import SyncMetadata
-        record = self.db.query(SyncMetadata).filter(SyncMetadata.entity_type == f"oauth_{key}").first()
-        return record.last_error if record else None  # reuse last_error field as value storage
+        record = self.db.query(SyncMetadata).filter(
+            SyncMetadata.entity_type == f"oauth_{key}"
+        ).first()
+        return record.last_error if record else None
 
     def _set_setting(self, key: str, value: str):
         from app.models.analytics import SyncMetadata
-        record = self.db.query(SyncMetadata).filter(SyncMetadata.entity_type == f"oauth_{key}").first()
+        # Validate value fits in column before saving
+        if len(value) > 500:
+            raise ValueError(
+                f"Encrypted token exceeds 500-char column limit for key='{key}'. "
+                "Run the migration to add an oauth_tokens table with Text columns."
+            )
+        record = self.db.query(SyncMetadata).filter(
+            SyncMetadata.entity_type == f"oauth_{key}"
+        ).first()
         if not record:
             record = SyncMetadata(entity_type=f"oauth_{key}")
             self.db.add(record)
@@ -52,20 +93,31 @@ class ZohoTokenStore:
         encrypted = self._get_setting("access_token")
         if not encrypted:
             return None
-        return decrypt_token(encrypted)
+        try:
+            return decrypt_token(encrypted)
+        except Exception as exc:
+            logger.error("zoho_token_decrypt_failed", key="access_token", error=str(exc))
+            return None
 
     def get_refresh_token(self) -> Optional[str]:
         encrypted = self._get_setting("refresh_token")
         if not encrypted:
             return None
-        return decrypt_token(encrypted)
+        try:
+            return decrypt_token(encrypted)
+        except Exception as exc:
+            logger.error("zoho_token_decrypt_failed", key="refresh_token", error=str(exc))
+            return None
 
     def is_access_token_valid(self) -> bool:
         expires_at_str = self._get_setting("expires_at")
         if not expires_at_str:
             return False
-        expires_at = datetime.fromisoformat(expires_at_str)
-        return datetime.now(timezone.utc) < expires_at
+        try:
+            expires_at = datetime.fromisoformat(expires_at_str)
+            return datetime.now(timezone.utc) < expires_at
+        except (ValueError, TypeError):
+            return False
 
 
 class ZohoOAuthManager:
@@ -76,18 +128,23 @@ class ZohoOAuthManager:
         self.token_store = ZohoTokenStore(db)
 
     def get_authorization_url(self) -> str:
+        import urllib.parse
         params = {
             "response_type": "code",
             "client_id": settings.ZOHO_CLIENT_ID,
-            "scope": "ZohoProjects.portals.READ,ZohoProjects.projects.READ,ZohoProjects.tasks.READ,ZohoProjects.timesheets.READ,ZohoProjects.users.READ,ZohoProjects.milestones.READ",
+            "scope": (
+                "ZohoProjects.portals.READ,ZohoProjects.projects.READ,"
+                "ZohoProjects.tasks.READ,ZohoProjects.timesheets.READ,"
+                "ZohoProjects.users.READ,ZohoProjects.milestones.READ"
+            ),
             "redirect_uri": settings.ZOHO_REDIRECT_URI,
             "access_type": "offline",
         }
-        param_str = "&".join(f"{k}={v}" for k, v in params.items())
+        param_str = urllib.parse.urlencode(params)
         return f"{settings.ZOHO_ACCOUNTS_URL}/auth?{param_str}"
 
     def exchange_code(self, code: str) -> Dict:
-        with httpx.Client() as client:
+        with httpx.Client(timeout=30.0) as client:
             response = client.post(
                 f"{settings.ZOHO_ACCOUNTS_URL}/token",
                 data={
@@ -112,7 +169,7 @@ class ZohoOAuthManager:
         if not refresh_token:
             raise RuntimeError("No refresh token stored. Re-authorize Zoho OAuth.")
 
-        with httpx.Client() as client:
+        with httpx.Client(timeout=30.0) as client:
             response = client.post(
                 f"{settings.ZOHO_ACCOUNTS_URL}/token",
                 data={
@@ -126,7 +183,7 @@ class ZohoOAuthManager:
             data = response.json()
             self.token_store.save_tokens(
                 data["access_token"],
-                refresh_token,  # refresh token does not rotate in Zoho
+                refresh_token,  # Zoho refresh tokens do not rotate
                 data.get("expires_in", 3600),
             )
             logger.info("zoho_token_refreshed")

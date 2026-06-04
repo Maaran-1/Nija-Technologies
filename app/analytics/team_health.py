@@ -81,7 +81,8 @@ def detect_workload_concentration(db: Session) -> List[Dict[str, Any]]:
         for user_id, count in task_counts:
             ratio = count / total_tasks
             if ratio > CONCENTRATION_THRESHOLD:
-                user = db.query(User).get(user_id)
+                # FIX: Use Session.get() instead of deprecated Query.get()
+                user = db.get(User, user_id)
                 concentrations.append({
                     "project_id": project.id,
                     "project_name": project.name,
@@ -126,7 +127,7 @@ def detect_unassigned_high_priority(db: Session) -> List[Dict[str, Any]]:
 
 
 def compute_team_health_summary(db: Session) -> Dict[str, Any]:
-    """Aggregate team health signals into a single summary."""
+    """Aggregate team health signals into a single summary dict."""
     burnout_risks = detect_burnout_risks(db)
     concentrations = detect_workload_concentration(db)
     unassigned_gaps = detect_unassigned_high_priority(db)

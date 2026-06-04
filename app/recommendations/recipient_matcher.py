@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 import structlog
@@ -26,7 +26,7 @@ def _project_utilization_after_assignment(
     task_estimated_hours: float,
     window_weeks: int = 2,
 ) -> float:
-    """Compute projected utilization after adding task_estimated_hours."""
+    """Compute projected utilization after adding task_estimated_hours to a user's load."""
     if current_capacity_hours <= 0:
         return 999.0
     additional_pct = (task_estimated_hours / current_capacity_hours) * 100
@@ -35,8 +35,8 @@ def _project_utilization_after_assignment(
 
 def _compute_skill_match_score(task: Task, user: User, db: Session) -> float:
     """
-    Infer skill match from historical task completions in same category/tags.
-    Returns 0-100.
+    Infer skill match from historical task completions.
+    Returns 0-100. Falls back to neutral (50) when no tag data available.
     """
     if not task.tags:
         return 50.0  # Neutral when no tags
@@ -45,7 +45,7 @@ def _compute_skill_match_score(task: Task, user: User, db: Session) -> float:
     if not task_tags:
         return 50.0
 
-    # Count completed tasks by user with matching tags
+    # Count completed tasks by user that have tags (proxy for skill evidence)
     user_completed_with_tags = (
         db.query(func.count(Task.id))
         .filter(
@@ -103,7 +103,7 @@ def _compute_historical_completion_rate(user: User, db: Session) -> float:
 
 
 def _compute_wip_depth_score(user: User, db: Session) -> float:
-    """Score 0-100: fewer open high-priority tasks = higher score."""
+    """Score 0-100: fewer open high-priority tasks means higher capacity score."""
     open_high = (
         db.query(func.count(Task.id))
         .filter(
@@ -129,12 +129,12 @@ def score_recipients(
     exclude_user_id=None,
 ) -> List[Dict[str, Any]]:
     """
-    Score all eligible users as potential recipients for a task.
-    Eligible = utilization_band underutilized or optimal, and projected util < 90%.
+    Score all eligible users as potential task recipients.
+    Eligible = latest utilization band is underutilized or optimal,
+    AND projected utilization after task assignment stays below MAX_PROJECTED_UTILIZATION.
+    Returns list sorted by composite recipient_score descending (best match first).
     """
-    from sqlalchemy import func
-
-    # Get latest snapshot dates
+    # Get the latest snapshot date per user via GROUP BY subquery
     latest_snap_dates = (
         db.query(
             UtilizationSnapshot.user_id,
@@ -171,7 +171,7 @@ def score_recipients(
         )
 
         if projected_util > settings.MAX_PROJECTED_UTILIZATION:
-            continue  # Would overload recipient
+            continue  # Would overload recipient — skip
 
         skill_score = _compute_skill_match_score(task, user, db)
         familiarity_score = _compute_project_familiarity(task, user, db)
@@ -180,7 +180,7 @@ def score_recipients(
 
         # Weighted composite recipient score
         recipient_score = (
-            (100 - float(snap.utilization_pct or 0)) * 0.35  # Available capacity weight
+            (100 - float(snap.utilization_pct or 0)) * 0.35  # Available capacity
             + skill_score * 0.25
             + familiarity_score * 0.20
             + completion_rate * 0.10

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from app.database import get_db
 from app.core.auth import (
     verify_password, create_access_token, create_refresh_token,
-    decode_token, get_current_user, hash_password,
+    decode_token, get_current_user, hash_password, require_role,
 )
 from app.core.exceptions import UnauthorizedError, ConflictError
 from app.core.responses import success_response
@@ -19,6 +19,7 @@ router = APIRouter()
 
 @router.post("/login", response_model=dict)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    """Authenticate a platform user and return JWT tokens."""
     user = db.query(PlatformUser).filter(
         PlatformUser.email == payload.email.lower(),
         PlatformUser.is_active == True,
@@ -46,6 +47,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
 @router.post("/refresh", response_model=dict)
 def refresh_token(payload: dict, db: Session = Depends(get_db)):
+    """Exchange a refresh token for new access + refresh tokens."""
     token = payload.get("refresh_token")
     if not token:
         raise UnauthorizedError("Refresh token required")
@@ -77,19 +79,32 @@ def refresh_token(payload: dict, db: Session = Depends(get_db)):
 
 @router.post("/logout", response_model=dict)
 def logout(current_user=Depends(get_current_user)):
-    # JWT is stateless; client discards token. Optionally implement token blacklist via Redis.
+    """
+    Logout current user. JWT is stateless; client must discard the token.
+    For production, implement a Redis-based token blacklist for immediate revocation.
+    """
     return success_response({"message": "Logged out successfully"})
 
 
 @router.get("/me", response_model=dict)
 def get_me(current_user=Depends(get_current_user)):
+    """Return the currently authenticated platform user's profile."""
     return success_response(PlatformUserOut.model_validate(current_user).model_dump())
 
 
 @router.post("/register", response_model=dict)
-def register(payload: PlatformUserCreate, db: Session = Depends(get_db)):
-    """Create a new platform user. In production restrict to admins."""
-    existing = db.query(PlatformUser).filter(PlatformUser.email == payload.email.lower()).first()
+def register(
+    payload: PlatformUserCreate,
+    current_user=Depends(require_role("admin")),  # SECURITY: only admins can create users
+    db: Session = Depends(get_db),
+):
+    """
+    Create a new platform user account.
+    Restricted to admin role — protects against unauthorized account creation.
+    """
+    existing = db.query(PlatformUser).filter(
+        PlatformUser.email == payload.email.lower()
+    ).first()
     if existing:
         raise ConflictError(f"User with email {payload.email} already exists")
 

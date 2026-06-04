@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -12,6 +13,14 @@ configure_logging()
 logger = structlog.get_logger()
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan handler (replaces deprecated on_event)."""
+    logger.info("application_starting", version=settings.APP_VERSION)
+    yield
+    logger.info("application_shutting_down")
+
+
 def create_application() -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
@@ -19,12 +28,13 @@ def create_application() -> FastAPI:
         docs_url="/api/docs" if settings.DEBUG else None,
         redoc_url="/api/redoc" if settings.DEBUG else None,
         openapi_url="/api/openapi.json" if settings.DEBUG else None,
+        lifespan=lifespan,
     )
 
     # Middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.ALLOWED_ORIGINS,
+        allow_origins=settings.allowed_origins_list,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -71,14 +81,6 @@ def create_application() -> FastAPI:
     app.include_router(recommendations.router, prefix="/api/v1/recommendations", tags=["recommendations"])
     app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
     app.include_router(sync.router, prefix="/api/v1/sync", tags=["sync"])
-
-    @app.on_event("startup")
-    async def startup_event():
-        logger.info("application_starting", version=settings.APP_VERSION)
-
-    @app.on_event("shutdown")
-    async def shutdown_event():
-        logger.info("application_shutting_down")
 
     return app
 

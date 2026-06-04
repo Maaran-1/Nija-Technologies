@@ -2,7 +2,8 @@ import axios from 'axios'
 import { useAuthStore } from '@/store/authStore'
 
 const api = axios.create({
-  baseURL: '/api/v1',
+  // Reads VITE_API_BASE_URL env var injected at build time; falls back to /api/v1
+  baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
   headers: { 'Content-Type': 'application/json' },
   timeout: 30_000,
 })

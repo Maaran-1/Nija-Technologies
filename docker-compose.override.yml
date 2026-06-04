@@ -1,0 +1,22 @@
+# docker-compose.override.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Development overrides — applied automatically when running `docker-compose up`
+# in a development environment. DO NOT use in production.
+#
+# Usage:
+#   Development:  docker-compose up              (auto-applies this file)
+#   Production:   docker-compose -f docker-compose.yml up   (ignores override)
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+services:
+  api:
+    environment:
+      DEBUG: "true"
+    volumes:
+      # Hot-reload bind mount: maps local app/ directory into the container.
+      # Code changes on the host are reflected immediately without rebuilding.
+      - ./app:/app/app:ro
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"

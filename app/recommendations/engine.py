@@ -16,8 +16,8 @@ from app.recommendations.explainer import build_rationale
 logger = structlog.get_logger()
 
 
-def _get_user_latest_snapshot(db: Session, user_id):
-    from sqlalchemy import func
+def _get_user_latest_snapshot(db: Session, user_id) -> UtilizationSnapshot:
+    """Return the most recent UtilizationSnapshot for a user, or None."""
     return (
         db.query(UtilizationSnapshot)
         .filter(UtilizationSnapshot.user_id == user_id)
@@ -29,26 +29,25 @@ def _get_user_latest_snapshot(db: Session, user_id):
 def generate_recommendations(db: Session, max_recommendations: int = None) -> int:
     """
     Full recommendation generation pipeline:
-    1. Find overloaded users
-    2. Find candidate tasks
-    3. Score recipients
-    4. Simulate impact
-    5. Build rationale
-    6. Persist to recommendations table
-    Returns count of new recommendations created.
+    1. Find overloaded users (latest snapshot = overloaded or critical)
+    2. Find candidate tasks (open/in_progress, not imminent, has estimated_hours)
+    3. Score eligible recipients (by available capacity, skill, familiarity, etc.)
+    4. Simulate impact (projected utilization delta)
+    5. Build human-readable rationale
+    6. Persist to recommendations table (upsert on existing pending rec for same task+target)
+
+    Returns count of new recommendations created or updated.
     """
     if max_recommendations is None:
         max_recommendations = settings.RECOMMENDATION_BATCH_SIZE
 
-    logger.info("recommendation_generation_start")
+    logger.info("recommendation_generation_start", max_recs=max_recommendations)
 
-    # Mark existing pending recommendations as superseded (soft expire)
-    # We keep them but a fresh run generates new ones
     overloaded_users = get_overloaded_users(db)
     logger.info("overloaded_users_found", count=len(overloaded_users))
 
     created_count = 0
-    seen_task_ids = set()  # Prevent duplicate recommendations for same task
+    seen_task_ids: set = set()  # Prevent duplicate recommendations for the same task
 
     for source_user in overloaded_users:
         source_snap = _get_user_latest_snapshot(db, source_user.id)
@@ -67,7 +66,7 @@ def generate_recommendations(db: Session, max_recommendations: int = None) -> in
             if not recipients:
                 continue
 
-            # Take best recipient
+            # Take the highest-scoring recipient
             best = recipients[0]
             target_user = best["user"]
             target_snap = best["snapshot"]
@@ -94,7 +93,7 @@ def generate_recommendations(db: Session, max_recommendations: int = None) -> in
                 confidence_score=confidence,
             )
 
-            # Check if identical pending recommendation already exists
+            # Check if an identical pending recommendation already exists for this task + target
             existing = (
                 db.query(Recommendation)
                 .filter(
@@ -105,7 +104,7 @@ def generate_recommendations(db: Session, max_recommendations: int = None) -> in
                 .first()
             )
             if existing:
-                # Update scores on existing recommendation
+                # Update scores on the existing recommendation instead of creating a duplicate
                 existing.impact_score = impact_score
                 existing.confidence_score = confidence
                 existing.projected_source_util = projected_source

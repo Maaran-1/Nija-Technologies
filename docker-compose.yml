@@ -8,9 +8,11 @@ services:
     environment:
       POSTGRES_DB: wop_db
       POSTGRES_USER: wop_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wop_secret}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # NOTE: Do NOT expose port 5432 externally in production.
+    # Remove or restrict this mapping before deploying.
     ports:
       - "5432:5432"
     healthcheck:
@@ -23,6 +25,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # NOTE: Do NOT expose port 6379 externally in production.
     ports:
       - "6379:6379"
     healthcheck:
@@ -40,7 +43,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://wop_user:${POSTGRES_PASSWORD:-wop_secret}@db:5432/wop_db
+      DATABASE_URL: postgresql://wop_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/wop_db
       REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
@@ -49,8 +52,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - ./app:/app/app:ro  # Hot reload in dev
+    # NOTE: Hot-reload bind mount moved to docker-compose.override.yml for dev.
+    # Do NOT mount app code in production — use the baked-in image.
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4"
 
@@ -63,7 +66,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://wop_user:${POSTGRES_PASSWORD:-wop_secret}@db:5432/wop_db
+      DATABASE_URL: postgresql://wop_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/wop_db
       REDIS_URL: redis://redis:6379/0
     depends_on:
       db:
@@ -81,13 +84,16 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://wop_user:${POSTGRES_PASSWORD:-wop_secret}@db:5432/wop_db
+      DATABASE_URL: postgresql://wop_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/wop_db
       REDIS_URL: redis://redis:6379/0
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      # Persist beat schedule so it survives container restarts
+      - celerybeat_schedule:/tmp
     command: celery -A app.workers.celery_app beat --loglevel=info
 
   # ── Frontend ───────────────────────────────────────────────────────────────
@@ -109,6 +115,8 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      # Port 443 is mapped but SSL termination must be configured in nginx.conf
+      # before enabling. See nginx/nginx.conf for SSL setup instructions.
       - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
@@ -118,3 +126,4 @@ services:
 
 volumes:
   postgres_data:
+  celerybeat_schedule:

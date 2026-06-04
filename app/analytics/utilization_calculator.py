@@ -1,3 +1,4 @@
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 from sqlalchemy import func, and_
@@ -29,11 +30,18 @@ def compute_user_utilization(
     user: User,
     snapshot_date: date,
     window_weeks: int = None,
-) -> Tuple[float, float, float, str]:
+) -> Tuple[float, float, float, float, str]:
     """
-    Returns (capacity_hours, allocated_hours, logged_hours, band).
-    allocated_hours = sum of estimated_hours on active tasks.
-    logged_hours = sum of timesheet hours in window.
+    Compute utilization metrics for a user over a rolling window.
+
+    Returns:
+        (capacity_hours, allocated_hours, logged_hours, utilization_pct, band)
+
+    - capacity_hours: total available hours in the window (capacity_per_week × window_weeks)
+    - allocated_hours: sum of estimated_hours on open/in_progress tasks
+    - logged_hours: sum of timesheet hours logged within the window
+    - utilization_pct: allocated_hours / capacity_hours × 100
+    - band: underutilized | optimal | overloaded | critical
     """
     if window_weeks is None:
         window_weeks = settings.UTILIZATION_WINDOW_WEEKS
@@ -41,7 +49,7 @@ def compute_user_utilization(
     window_start = snapshot_date - timedelta(weeks=window_weeks)
     capacity_hours = float(user.capacity_hours_per_week or 40.0) * window_weeks
 
-    # Allocated hours: estimated hours on open/in_progress tasks
+    # Allocated hours: estimated hours on open/in_progress tasks assigned to user
     allocated = (
         db.query(func.coalesce(func.sum(Task.estimated_hours), 0.0))
         .filter(
@@ -52,7 +60,7 @@ def compute_user_utilization(
     )
     allocated_hours = float(allocated or 0.0)
 
-    # Logged hours: actual timesheet entries in the window
+    # Logged hours: actual timesheet entries in the rolling window
     logged = (
         db.query(func.coalesce(func.sum(TimesheetEntry.hours_logged), 0.0))
         .filter(
@@ -99,7 +107,7 @@ def compute_and_save_utilization_snapshots(
                 db, user, snapshot_date, window_weeks
             )
             stmt = insert(UtilizationSnapshot).values(
-                id=__import__("uuid").uuid4(),
+                id=uuid.uuid4(),
                 user_id=user.id,
                 snapshot_date=snapshot_date,
                 window_weeks=window_weeks,
@@ -130,7 +138,7 @@ def compute_and_save_utilization_snapshots(
 
 
 def get_consecutive_overload_weeks(db: Session, user_id, as_of_date: date = None) -> int:
-    """Count consecutive weekly snapshots where band = critical or overloaded."""
+    """Count consecutive weekly snapshots where band is 'critical' or 'overloaded'."""
     if as_of_date is None:
         as_of_date = date.today()
 
@@ -157,6 +165,7 @@ def get_consecutive_overload_weeks(db: Session, user_id, as_of_date: date = None
 def get_user_utilization_trend(
     db: Session, user_id, weeks_back: int = 8
 ) -> List[UtilizationSnapshot]:
+    """Return utilization snapshots for a user over the past N weeks, oldest first."""
     cutoff = date.today() - timedelta(weeks=weeks_back)
     return (
         db.query(UtilizationSnapshot)

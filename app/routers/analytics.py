@@ -7,7 +7,8 @@ from app.database import get_db
 from app.core.auth import get_current_user
 from app.core.responses import success_response
 from app.models.project import Project
-from app.models.analytics import ProjectHealthScore
+from app.models.analytics import ProjectHealthScore, UtilizationSnapshot
+from app.models.recommendation import Recommendation
 from app.analytics.team_health import compute_team_health_summary
 
 router = APIRouter()
@@ -24,10 +25,8 @@ def get_executive_dashboard(
     utilization distribution, and pending recommendations count.
     """
     from app.models.user import User
-    from app.models.analytics import UtilizationSnapshot
-    from app.models.recommendation import Recommendation
 
-    # Utilization distribution
+    # Get the latest snapshot per user via GROUP BY subquery
     latest_dates = (
         db.query(
             UtilizationSnapshot.user_id,
@@ -79,7 +78,7 @@ def get_executive_dashboard(
 
     avg_health = round(total_health_score / health_count, 2) if health_count > 0 else 0.0
 
-    # Pending recommendations
+    # Pending recommendations count
     pending_recs = (
         db.query(func.count(Recommendation.id))
         .filter(Recommendation.status == "pending")
@@ -142,7 +141,7 @@ def get_portfolio_health(
             "scored_at": str(score.scored_at) if score else None,
         })
 
-    # Sort by score ascending (worst first)
+    # Sort by score ascending (worst-performing projects first)
     result.sort(key=lambda x: x.get("overall_score") or 100.0)
 
     return success_response({
@@ -157,18 +156,17 @@ def get_team_health_signals(
     db: Session = Depends(get_db),
 ):
     """Detailed team health signals: burnout risks, concentration, unassigned gaps."""
+    import uuid
+    from datetime import date
     summary = compute_team_health_summary(db)
 
-    # Serialize UUIDs
     def serialize(obj):
         if isinstance(obj, dict):
             return {k: serialize(v) for k, v in obj.items()}
         if isinstance(obj, list):
             return [serialize(i) for i in obj]
-        import uuid
         if isinstance(obj, uuid.UUID):
             return str(obj)
-        from datetime import date
         if isinstance(obj, date):
             return str(obj)
         return obj
@@ -181,9 +179,8 @@ def get_workload_distribution(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Current workload distribution across the team."""
+    """Current workload distribution across the entire team."""
     from app.models.user import User
-    from app.models.analytics import UtilizationSnapshot
     from datetime import date
 
     latest_dates = (

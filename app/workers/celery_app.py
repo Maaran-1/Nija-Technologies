@@ -18,6 +18,9 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    # Persist the beat schedule so it survives container restarts.
+    # Without this, beat resets on every restart and may trigger tasks immediately.
+    beat_schedule_filename="/tmp/celerybeat-schedule",
     beat_schedule={
         "full-sync-hourly": {
             "task": "app.workers.tasks.run_full_sync",
@@ -37,7 +40,8 @@ celery_app.conf.update(
         },
         "recommendation-generation": {
             "task": "app.workers.tasks.run_recommendation_generation",
-            "schedule": settings.TASK_SYNC_INTERVAL_SECONDS + 120,  # After incremental sync
+            # Run shortly after incremental sync to ensure fresh data
+            "schedule": settings.TASK_SYNC_INTERVAL_SECONDS + 120,
         },
     },
 )

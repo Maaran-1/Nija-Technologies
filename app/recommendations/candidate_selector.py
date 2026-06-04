@@ -1,5 +1,6 @@
 from datetime import date, timedelta
-from typing import List, Tuple
+from typing import List
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 import structlog
 
@@ -14,34 +15,11 @@ IMMINENT_DUE_DATE_DAYS = 3
 
 
 def get_overloaded_users(db: Session) -> List[User]:
-    """Return users whose latest utilization is overloaded or critical."""
-    latest_date_subq = (
-        db.query(UtilizationSnapshot.user_id,
-                 UtilizationSnapshot.utilization_pct,
-                 UtilizationSnapshot.utilization_band,
-                 UtilizationSnapshot.snapshot_date)
-        .order_by(UtilizationSnapshot.user_id, UtilizationSnapshot.snapshot_date.desc())
-        .subquery()
-    )
-
-    overloaded_user_ids = (
-        db.query(UtilizationSnapshot.user_id)
-        .filter(
-            UtilizationSnapshot.utilization_band.in_(["overloaded", "critical"]),
-            UtilizationSnapshot.snapshot_date == (
-                db.query(UtilizationSnapshot.snapshot_date)
-                .filter(UtilizationSnapshot.user_id == UtilizationSnapshot.user_id)
-                .order_by(UtilizationSnapshot.snapshot_date.desc())
-                .limit(1)
-                .scalar_subquery()
-            ),
-        )
-        .distinct()
-        .all()
-    )
-
-    # Simpler approach: get the latest snapshot per user and filter
-    from sqlalchemy import func
+    """
+    Return active users whose latest utilization snapshot is 'overloaded' or 'critical'.
+    Uses a GROUP BY subquery to reliably get the most recent snapshot per user.
+    """
+    # Get the latest snapshot date per user
     latest_snap_dates = (
         db.query(
             UtilizationSnapshot.user_id,
@@ -51,6 +29,7 @@ def get_overloaded_users(db: Session) -> List[User]:
         .subquery()
     )
 
+    # Join snapshots to their latest date and filter by overload bands
     overloaded_user_ids_query = (
         db.query(UtilizationSnapshot.user_id)
         .join(
@@ -68,10 +47,11 @@ def get_overloaded_users(db: Session) -> List[User]:
 
 def get_candidate_tasks(db: Session, user: User) -> List[Task]:
     """
-    Return tasks assigned to user that are eligible for reassignment:
+    Return tasks assigned to a user that are eligible for reassignment:
     - Status: open or in_progress
-    - Due date not imminent (>3 days away or null)
+    - Due date not imminent (> 3 days away or null)
     - Has estimated hours (so we can compute impact)
+    Ordered by priority ascending (1=high first), then by estimated hours descending.
     """
     today = date.today()
     imminent_cutoff = today + timedelta(days=IMMINENT_DUE_DATE_DAYS)
@@ -83,7 +63,7 @@ def get_candidate_tasks(db: Session, user: User) -> List[Task]:
             Task.status.in_(["open", "in_progress"]),
             Task.estimated_hours.isnot(None),
             Task.estimated_hours > 0,
-            # Either no due date or due date not imminent
+            # Either no due date or due date is not imminent
             (Task.due_date.is_(None)) | (Task.due_date > imminent_cutoff),
         )
         .order_by(Task.priority.asc(), Task.estimated_hours.desc())

@@ -1,6 +1,6 @@
-from pydantic_settings import BaseSettings
-from pydantic import Field
-from typing import Optional
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from typing import Optional, List
 import secrets
 
 
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     ZOHO_ACCOUNTS_URL: str = "https://accounts.zoho.com/oauth/v2"
     ZOHO_RATE_LIMIT_PER_HOUR: int = 2500
 
-    # Encryption key for Zoho tokens at rest
+    # Encryption key for Zoho tokens at rest (must be a valid 44-char Fernet key)
     ENCRYPTION_KEY: str = Field(..., env="ENCRYPTION_KEY")
 
     # Analytics
@@ -63,17 +63,25 @@ class Settings(BaseSettings):
     # API rate limiting
     RATE_LIMIT_PER_MINUTE: int = 100
 
-    # CORS
-    ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:80"]
+    # CORS — comma-separated list of allowed origins
+    # Example: "http://localhost:3000,http://localhost"
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:80"
 
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     WORKERS: int = 4
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
+    @property
+    def allowed_origins_list(self) -> List[str]:
+        """Parse ALLOWED_ORIGINS from comma-separated string."""
+        return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
 
 
 settings = Settings()
